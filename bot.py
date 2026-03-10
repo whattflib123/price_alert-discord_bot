@@ -254,12 +254,12 @@ class PriceClient:
 
             price = quotes[0].get("z") or quotes[0].get("y")
             if not price or price == "-":
-                raise ValueError(f"Price unavailable from TWSE for {symbol}")
+                continue
 
             display_name = quotes[0].get("n") or None
             return float(price), display_name
 
-        raise ValueError(f"Symbol not found on TWSE/TPEX: {symbol}")
+        raise ValueError(f"Price unavailable from TWSE/TPEX for {symbol}")
 
 
 class PriceAlertBot(commands.Bot):
