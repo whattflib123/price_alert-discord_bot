@@ -137,6 +137,8 @@ python3 bot.py
 /alert market:tw_stock symbol:2330 direction:below price:950 message:台積電跌破提醒
 ```
 
+台股在建立提醒時會自動帶入中文簡稱，例如 `2330` 會顯示為 `台積電 (2330)`。
+
 ### 查看提醒
 
 ```text

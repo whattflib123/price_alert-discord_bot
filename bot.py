@@ -37,6 +37,7 @@ class Alert:
     channel_id: int
     market: str
     symbol: str
+    display_name: Optional[str]
     direction: str
     target_price: float
     message: str
@@ -64,6 +65,7 @@ class AlertRepository:
                     channel_id INTEGER NOT NULL,
                     market TEXT NOT NULL DEFAULT 'crypto',
                     symbol TEXT NOT NULL,
+                    display_name TEXT,
                     direction TEXT NOT NULL CHECK(direction IN ('above', 'below')),
                     target_price REAL NOT NULL,
                     message TEXT NOT NULL,
@@ -81,6 +83,8 @@ class AlertRepository:
                 conn.execute(
                     "ALTER TABLE price_alerts ADD COLUMN market TEXT NOT NULL DEFAULT 'crypto'"
                 )
+            if "display_name" not in columns:
+                conn.execute("ALTER TABLE price_alerts ADD COLUMN display_name TEXT")
             conn.commit()
 
     def create_alert(
@@ -89,6 +93,7 @@ class AlertRepository:
         channel_id: int,
         market: str,
         symbol: str,
+        display_name: Optional[str],
         direction: str,
         target_price: float,
         message: str,
@@ -96,10 +101,19 @@ class AlertRepository:
         with self._connect() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO price_alerts (user_id, channel_id, market, symbol, direction, target_price, message)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO price_alerts (user_id, channel_id, market, symbol, display_name, direction, target_price, message)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, channel_id, market, symbol, direction, target_price, message),
+                (
+                    user_id,
+                    channel_id,
+                    market,
+                    symbol,
+                    display_name,
+                    direction,
+                    target_price,
+                    message,
+                ),
             )
             conn.commit()
             return int(cursor.lastrowid)
@@ -108,7 +122,7 @@ class AlertRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, user_id, channel_id, market, symbol, direction, target_price, message, is_active, last_price
+                SELECT id, user_id, channel_id, market, symbol, display_name, direction, target_price, message, is_active, last_price
                 FROM price_alerts
                 WHERE user_id = ?
                 ORDER BY id DESC
@@ -121,7 +135,7 @@ class AlertRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, user_id, channel_id, market, symbol, direction, target_price, message, is_active, last_price
+                SELECT id, user_id, channel_id, market, symbol, display_name, direction, target_price, message, is_active, last_price
                 FROM price_alerts
                 WHERE is_active = 1
                 ORDER BY id ASC
@@ -178,8 +192,15 @@ class PriceClient:
         if market == "us_stock":
             return await self._fetch_us_stock_price(symbol)
         if market == "tw_stock":
-            return await self._fetch_tw_stock_price(symbol)
+            price, _display_name = await self._fetch_tw_stock_quote(symbol)
+            return price
         raise ValueError(f"Unsupported market: {market}")
+
+    async def fetch_tw_stock_display_name(self, symbol: str) -> Optional[str]:
+        price, display_name = await self._fetch_tw_stock_quote(symbol)
+        if price <= 0:
+            return display_name
+        return display_name
 
     async def _fetch_crypto_price(self, symbol: str) -> float:
         if self.session is None:
@@ -217,7 +238,7 @@ class PriceClient:
 
         return float(parts[6])
 
-    async def _fetch_tw_stock_price(self, symbol: str) -> float:
+    async def _fetch_tw_stock_quote(self, symbol: str) -> tuple[float, Optional[str]]:
         if self.session is None:
             raise RuntimeError("HTTP session is not started")
 
@@ -235,7 +256,8 @@ class PriceClient:
             if not price or price == "-":
                 raise ValueError(f"Price unavailable from TWSE for {symbol}")
 
-            return float(price)
+            display_name = quotes[0].get("n") or None
+            return float(price), display_name
 
         raise ValueError(f"Symbol not found on TWSE/TPEX: {symbol}")
 
@@ -314,12 +336,18 @@ class PriceAlertBot(commands.Bot):
         content = (
             f"🔔 <@{alert.user_id}> 提醒觸發\n"
             f"🏷️ 市場: `{market_text}`\n"
-            f"💹 品種: `{alert.symbol}`\n"
+            f"💹 品種: `{format_alert_symbol(alert)}`\n"
             f"{direction_emoji} 條件: {direction_text} `{alert.target_price}`\n"
             f"💰 目前價格: `{current_price}`\n"
             f"📝 訊息: {alert.message}"
         )
         await channel.send(content)
+
+
+def format_alert_symbol(alert: Alert) -> str:
+    if alert.market == "tw_stock" and alert.display_name:
+        return f"{alert.display_name} ({alert.symbol})"
+    return alert.symbol
 
 
 repo = AlertRepository(DB_PATH)
@@ -355,12 +383,16 @@ async def create_alert(
     message: str,
 ) -> None:
     normalized_symbol = symbol.strip().upper()
+    display_name: Optional[str] = None
     if price <= 0:
         await interaction.response.send_message("價格必須大於 0。", ephemeral=True)
         return
 
     try:
-        current_price = await price_client.fetch_price(market.value, normalized_symbol)
+        if market.value == "tw_stock":
+            current_price, display_name = await price_client._fetch_tw_stock_quote(normalized_symbol)
+        else:
+            current_price = await price_client.fetch_price(market.value, normalized_symbol)
     except Exception as exc:
         await interaction.response.send_message(
             (
@@ -376,6 +408,7 @@ async def create_alert(
         channel_id=interaction.channel_id,
         market=market.value,
         symbol=normalized_symbol,
+        display_name=display_name,
         direction=direction.value,
         target_price=price,
         message=message.strip(),
@@ -387,12 +420,17 @@ async def create_alert(
         "us_stock": "美股",
         "tw_stock": "台股",
     }[market.value]
+    symbol_text = (
+        f"{display_name} ({normalized_symbol})"
+        if market.value == "tw_stock" and display_name
+        else normalized_symbol
+    )
     direction_text = "上穿" if direction.value == "above" else "下破"
     await interaction.response.send_message(
         (
             f"已建立提醒 `#{alert_id}`\n"
             f"市場: `{market_text}`\n"
-            f"品種: `{normalized_symbol}`\n"
+            f"品種: `{symbol_text}`\n"
             f"條件: {direction_text} `{price}`\n"
             f"目前價格: `{current_price}`\n"
             f"訊息: {message}"
@@ -418,7 +456,7 @@ async def list_alerts(interaction: discord.Interaction) -> None:
         }.get(alert.market, alert.market)
         direction_text = "上穿" if alert.direction == "above" else "下破"
         lines.append(
-            f"#{alert.id} | {status} | {market_text} | {alert.symbol} | {direction_text} {alert.target_price} | {alert.message}"
+            f"#{alert.id} | {status} | {market_text} | {format_alert_symbol(alert)} | {direction_text} {alert.target_price} | {alert.message}"
         )
 
     await interaction.response.send_message("\n".join(lines), ephemeral=True)
