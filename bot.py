@@ -350,6 +350,45 @@ def format_alert_symbol(alert: Alert) -> str:
     return alert.symbol
 
 
+def build_alerts_embed(user_name: str, alerts: list[Alert]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🔔 目前提醒通知",
+        description=f"{user_name} 的提醒列表",
+        color=discord.Color.blue(),
+    )
+
+    market_labels = {
+        "crypto": "加密貨幣",
+        "us_stock": "美股",
+        "tw_stock": "台股",
+    }
+
+    for alert in alerts[:20]:
+        status = "啟用中" if alert.is_active else "已停用"
+        direction_text = "上穿" if alert.direction == "above" else "下破"
+        direction_emoji = "📈" if alert.direction == "above" else "📉"
+        market_text = market_labels.get(alert.market, alert.market)
+        value = (
+            f"🟢 狀態: `{status}`\n"
+            f"🏷️ 市場: `{market_text}`\n"
+            f"💹 品種: `{format_alert_symbol(alert)}`\n"
+            f"{direction_emoji} 條件: `{direction_text} {alert.target_price}`\n"
+            f"📝 訊息: {alert.message}"
+        )
+        embed.add_field(
+            name=f"📌 提醒 #{alert.id}",
+            value=value,
+            inline=False,
+        )
+
+    if len(alerts) > 20:
+        embed.set_footer(text=f"只顯示前 20 筆，共 {len(alerts)} 筆提醒")
+    else:
+        embed.set_footer(text=f"共 {len(alerts)} 筆提醒")
+
+    return embed
+
+
 repo = AlertRepository(DB_PATH)
 price_client = PriceClient()
 bot = PriceAlertBot(repo, price_client)
@@ -446,20 +485,8 @@ async def list_alerts(interaction: discord.Interaction) -> None:
         await interaction.response.send_message("你目前沒有任何提醒。", ephemeral=True)
         return
 
-    lines = []
-    for alert in alerts[:20]:
-        status = "啟用中" if alert.is_active else "已停用"
-        market_text = {
-            "crypto": "加密貨幣",
-            "us_stock": "美股",
-            "tw_stock": "台股",
-        }.get(alert.market, alert.market)
-        direction_text = "上穿" if alert.direction == "above" else "下破"
-        lines.append(
-            f"#{alert.id} | {status} | {market_text} | {format_alert_symbol(alert)} | {direction_text} {alert.target_price} | {alert.message}"
-        )
-
-    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+    embed = build_alerts_embed(interaction.user.display_name, alerts)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="notifications", description="查詢目前有哪些提醒通知")
