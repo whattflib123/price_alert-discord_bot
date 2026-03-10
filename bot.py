@@ -24,9 +24,11 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID")
 DB_PATH = os.getenv("DB_PATH", "alerts.db")
 PRICE_POLL_SECONDS = int(os.getenv("PRICE_POLL_SECONDS", "15"))
+FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
 
 BYBIT_TICKER_URL = "https://api.bybit.com/v5/market/tickers"
 STOOQ_QUOTE_URL = "https://stooq.com/q/l/"
+FINNHUB_QUOTE_URL = "https://finnhub.io/api/v1/quote"
 TWSE_QUOTE_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 
 
@@ -221,6 +223,22 @@ class PriceClient:
         return float(ticker_list[0]["lastPrice"])
 
     async def _fetch_us_stock_price(self, symbol: str) -> float:
+        stooq_error: Optional[Exception] = None
+        try:
+            return await self._fetch_us_stock_price_from_stooq(symbol)
+        except Exception as exc:
+            stooq_error = exc
+            logger.warning("Stooq quote failed for %s: %s", symbol, exc)
+
+        try:
+            return await self._fetch_us_stock_price_from_finnhub(symbol)
+        except Exception as exc:
+            logger.warning("Finnhub quote failed for %s: %s", symbol, exc)
+            raise ValueError(
+                f"Symbol lookup failed for {symbol}. Stooq: {stooq_error}; Finnhub: {exc}"
+            ) from exc
+
+    async def _fetch_us_stock_price_from_stooq(self, symbol: str) -> float:
         if self.session is None:
             raise RuntimeError("HTTP session is not started")
 
@@ -237,6 +255,23 @@ class PriceClient:
             raise ValueError(f"Symbol not found on Stooq: {symbol}")
 
         return float(parts[6])
+
+    async def _fetch_us_stock_price_from_finnhub(self, symbol: str) -> float:
+        if self.session is None:
+            raise RuntimeError("HTTP session is not started")
+        if not FINNHUB_API_KEY:
+            raise ValueError("FINNHUB_API_KEY is not set")
+
+        params = {"symbol": symbol.upper(), "token": FINNHUB_API_KEY}
+        async with self.session.get(FINNHUB_QUOTE_URL, params=params) as response:
+            response.raise_for_status()
+            data = await response.json()
+
+        current_price = data.get("c")
+        if current_price in (None, 0):
+            raise ValueError(f"Symbol not found on Finnhub: {symbol}")
+
+        return float(current_price)
 
     async def _fetch_tw_stock_quote(self, symbol: str) -> tuple[float, Optional[str]]:
         if self.session is None:
@@ -473,6 +508,62 @@ async def create_alert(
             f"條件: {direction_text} `{price}`\n"
             f"目前價格: `{current_price}`\n"
             f"訊息: {message}"
+        ),
+        ephemeral=True,
+    )
+
+
+@bot.tree.command(name="price", description="查詢目前價格")
+@app_commands.describe(
+    market="市場別",
+    symbol="品種，例如 BTCUSDT、AAPL、2330",
+)
+@app_commands.choices(
+    market=[
+        app_commands.Choice(name="crypto", value="crypto"),
+        app_commands.Choice(name="us_stock", value="us_stock"),
+        app_commands.Choice(name="tw_stock", value="tw_stock"),
+    ],
+)
+async def query_price(
+    interaction: discord.Interaction,
+    market: app_commands.Choice[str],
+    symbol: str,
+) -> None:
+    normalized_symbol = symbol.strip().upper()
+    display_name: Optional[str] = None
+
+    try:
+        if market.value == "tw_stock":
+            current_price, display_name = await price_client._fetch_tw_stock_quote(normalized_symbol)
+        else:
+            current_price = await price_client.fetch_price(market.value, normalized_symbol)
+    except Exception as exc:
+        await interaction.response.send_message(
+            (
+                f"無法取得 `{normalized_symbol}` 的價格，請確認它符合市場格式。"
+                f" `crypto` 用 `BTCUSDT`，`us_stock` 用 `AAPL`，`tw_stock` 用 `2330`。錯誤: {exc}"
+            ),
+            ephemeral=True,
+        )
+        return
+
+    market_text = {
+        "crypto": "加密貨幣",
+        "us_stock": "美股",
+        "tw_stock": "台股",
+    }[market.value]
+    symbol_text = (
+        f"{display_name} ({normalized_symbol})"
+        if market.value == "tw_stock" and display_name
+        else normalized_symbol
+    )
+    await interaction.response.send_message(
+        (
+            f"目前價格查詢結果\n"
+            f"市場: `{market_text}`\n"
+            f"品種: `{symbol_text}`\n"
+            f"目前價格: `{current_price}`"
         ),
         ephemeral=True,
     )

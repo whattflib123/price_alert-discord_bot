@@ -11,12 +11,13 @@
 價格來源：
 
 - `crypto`: Bybit 公開現貨行情 API
-- `us_stock`: Stooq 延遲報價
+- `us_stock`: Stooq 延遲報價，查不到時 fallback 到 Finnhub
 - `tw_stock`: TWSE 官方即時資訊 API
 
 ## 功能
 
 - `/alert` 建立提醒
+- `/price` 查詢目前價格
 - `/alerts` 查看自己的提醒
 - `/notifications` 查詢目前有哪些提醒通知
 - `/delete_alert` 刪除提醒
@@ -107,7 +108,10 @@ DISCORD_TOKEN=你的_bot_token
 DISCORD_CLIENT_ID=你的_application_id
 PRICE_POLL_SECONDS=15
 DB_PATH=alerts.db
+FINNHUB_API_KEY=你的_finnhub_api_key
 ```
+
+`FINNHUB_API_KEY` 只有在美股主來源 `Stooq` 查不到時才會用到。
 
 ### 5. 啟動 bot
 
@@ -151,6 +155,20 @@ python3 bot.py
 /notifications
 ```
 
+### 查詢目前價格
+
+```text
+/price market:crypto symbol:BTCUSDT
+```
+
+```text
+/price market:us_stock symbol:DELL
+```
+
+```text
+/price market:tw_stock symbol:2330
+```
+
 ### 刪除提醒
 
 ```text
@@ -175,6 +193,13 @@ python3 bot.py
 - `tw_stock`: `2330`、`2317`、`0050`
 
 如果某個 symbol 查不到，通常代表市場選錯，或 symbol 格式不正確。
+
+美股目前採用雙來源策略：
+
+- 先查 `Stooq`
+- 若 `Stooq` 回傳查無資料，改查 `Finnhub`
+
+因此像 `DELL` 這類在 `Stooq` 偶爾失敗的代號，只要有設定 `FINNHUB_API_KEY`，就還有第二次查價機會。
 
 ## 下一步可擴充
 
